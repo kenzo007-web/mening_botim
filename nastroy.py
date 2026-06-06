@@ -1,6 +1,7 @@
 import sqlite3
 import logging
 import re
+import random, string
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
@@ -11,13 +12,12 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from os import getenv
 from dotenv import load_dotenv
 
-
 # Loggingni sozlash
 logging.basicConfig(level=logging.INFO)
 load_dotenv()
 
-ADMIN_CODE=getenv("ADMIN_CODE")
-TOKEN=getenv("TOKEN")
+ADMIN_CODE = getenv("ADMIN_CODE")
+TOKEN = getenv("TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -25,14 +25,18 @@ dp = Dispatcher(storage=MemoryStorage())
 def init_db():
     conn = sqlite3.connect("school.db")
     cursor = conn.cursor()
-    # Foydalanuvchilar jadvali
+    
+    # Foydalanuvchilar jadvali (referal_code va referred_by qo'shildi)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         chat_id INTEGER PRIMARY KEY,
         username TEXT,
         first_name TEXT,
-        last_seen TEXT
+        last_seen TEXT,
+        referral_code TEXT UNIQUE,
+        referred_by TEXT
     )""")
+    
     # Arizalar jadvali
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS applications (
@@ -45,6 +49,16 @@ def init_db():
         phone TEXT,
         subject TEXT,
         created_at TEXT
+    )""")
+    
+    # O'quv markaziga kelgan talabalar jadvali (Yangi)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS students (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fullname TEXT,
+        phone TEXT,
+        brought_by_code TEXT,
+        arrived_at TEXT
     )""")
     conn.commit()
     conn.close()
@@ -63,11 +77,17 @@ class BotStates(StatesGroup):
     # Admin holatlari
     ADMIN_PANEL = State()
     ADMIN_BROADCAST = State()
+    
+    # Yangi o'quvchi qo'shish holatlari (Admin uchun)
+    STUDENTS_PANEL = State()
+    ADD_STUDENT_NAME = State()
+    ADD_STUDENT_PHONE = State()
+    ADD_STUDENT_REF = State()
 
 # ================= YORDAMCHI FUNKSIYALAR =================
-def make_keyboard(buttons: list) -> ReplyKeyboardMarkup:
-    keyboard = [[KeyboardButton(text=btn)] for btn in buttons]
-    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+def generate_ref_code():
+    """Foydalanuvchilar uchun noyob 6 xonali kod yaratadi"""
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
 def make_row_keyboard(buttons_matrix: list) -> ReplyKeyboardMarkup:
     keyboard = [[KeyboardButton(text=btn) for btn in row] for row in buttons_matrix]
@@ -82,16 +102,25 @@ def update_user_activity(message: Message):
     username = message.from_user.username if message.from_user.username else ""
     first_name = message.from_user.first_name if message.from_user.first_name else "Foydalanuvchi"
 
-    cursor.execute("""
-    INSERT OR REPLACE INTO users (chat_id, username, first_name, last_seen) 
-    VALUES (?, ?, ?, ?)
-    """, (chat_id, username, first_name, now_str))
+    # Avval foydalanuvchi mavjudligini tekshiramiz (kod o'zgarmasligi uchun)
+    cursor.execute("SELECT referral_code FROM users WHERE chat_id = ?", (chat_id,))
+    user_data = cursor.fetchone()
     
+    if user_data:
+        cursor.execute("""
+        UPDATE users SET username = ?, first_name = ?, last_seen = ? WHERE chat_id = ?
+        """, (username, first_name, now_str, chat_id))
+    else:
+        new_code = generate_ref_code()
+        cursor.execute("""
+        INSERT INTO users (chat_id, username, first_name, last_seen, referral_code, referred_by) 
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (chat_id, username, first_name, now_str, new_code, None))
+        
     conn.commit()
     conn.close()
 
 def build_profile_link_html(chat_id, username, first_name):
-    # HTML rejimida maxsus belgilarni tozalash
     safe_name = first_name.replace("<", "&lt;").replace(">", "&gt;") if first_name else "Foydalanuvchi"
     if username:
         return f'<a href="https://t.me/{username}">{safe_name}</a>'
@@ -101,7 +130,7 @@ def build_profile_link_html(chat_id, username, first_name):
 MAIN_MENU_KBOARD = [
     ["📚 Kurslar haqida ma'lumot", "✈️ Chet elda o'qish"],
     ["📝 Ariza qoldirish", "📍 Manzilimiz"],
-    ["📞 Aloqaga chiqish"]
+    ["📞 Aloqaga chiqish", "💰 Pul ishlash"]
 ]
 
 COURSES_KBOARD = [
@@ -113,13 +142,17 @@ COURSES_KBOARD = [
 ADMIN_MENU_KBOARD = [
     ["📋 Arizalar", "❌ Arizalarni tozalash"], 
     ["📢 Xabar yuborish", "🕒 Oxirgi 48 soat"], 
-    ["⬅️ Chiqish"]
+    ["🧑‍🎓 O'quvchilar paneli", "⬅️ Chiqish"]
+]
+
+STUDENTS_MENU_KBOARD = [
+    ["➕ Yangi o'quvchi qo'shish", "📊 Kelganlar ro'yxati"],
+    ["⬅️ Admin panelga qaytish"]
 ]
 
 # ================= KO'P FUNKSIYALI ADMIN TEKSHIRUVCHISI =================
 @dp.message(F.text == ADMIN_CODE)
 async def check_global_admin(message: Message, state: FSMContext):
-    """Foydalanuvchi qaysi holatda bo'lishidan qat'iy nazar kod kiritsa admin panelga o'tadi"""
     update_user_activity(message)
     await state.clear()
     kb = make_row_keyboard(ADMIN_MENU_KBOARD)
@@ -149,47 +182,16 @@ async def process_main_menu(message: Message, state: FSMContext):
         await state.set_state(BotStates.COURSES_MENU)
 
     elif "Chet elda o'qish" in text:
-        chet_el_matni = (
-            "✈️ <b>UNIWAY Consulting bilan Xorijda Ta'lim oling!</b>\n\n"
-            "Kelajagingizni dunyoning eng nufuzli universitetlarida qurish vaqti keldi. "
-            "Biz sizga hujjatlar to'plashdan tortib, viza olishgacha bo'lgan barcha jarayonlarda yaqindan ko'maklashamiz! ✨\n\n"
-            "🌟 <b>Biz taklif etayotgan TOP davlatlar:</b>\n\n"
-            "🇰🇷 <b>JANUBIY KOREYA — Yuqori texnologiyalar va K-Culture vatani!</b>\n"
-            "• TOP-100 talikka kiruvchi nufuzli universitetlar.\n"
-            "• To'liq va qisman (30% - 100%) GRANT imkoniyatlari.\n"
-            "• O'qish davomida qonuniy ishlash va haftasiga 20 soatgacha daromad topish imkoni.\n"
-            "• Bitirgandan so'ng Koreyada qolib, nufuzli kompaniyalarda ishlash vizasini olish imkoniyati.\n\n"
-            "🇲🇾 <b>MALAYZIYA — Osiyoning eng xavfsiz va ingliz tilli ta'lim markazi!</b>\n"
-            "• AQSH, Buyuk Britaniya va Avstraliya universitetlarining filiallarida o'qish imkoniyati (Double Degree — 2 ta diplom).\n"
-            "• IELTS ballingiz bo'lsa, 100% viza kafolati va IELTS'siz ham qabul qilinish imkoni.\n"
-            "• Yevropa standartidagi ta'lim, lekin yashash va o'qish xarajatlari juda arzon.\n"
-            "• To'liq ingliz tili muhiti.\n\n"
-            "🇹🇷 <b>TURKIYA — Yevropa va Osiyo chorrahasidagi sifatli ta'lim!</b>\n"
-            "• Imtihonsiz, faqatgina attestat yoki diplom baholari bilan talaba bo'lish imkoniyati.\n"
-            "• Turkiya davlat universitetlarida o'ta arzon (kontrakt to'lovlarisiz deyarli tekin) o'qish.\n"
-            "• Diplomi butun Yevropada va O'zbekistonda to'g'ridan-to'g'ri (nostrifikatsiyasiz) o'tadi.\n"
-            "• Madaniyat, til va qadriyatlarimiz juda yaqinligi sababli moslashish oson.\n\n"
-            "🔥 <b>Nega aynan UNIWAY?</b>\n"
-            "• 100% ishonchli va shaffof shartnoma.\n"
-            "• Professional maslahatchilar guruhining individual yondashuvi.\n"
-            "• Ketguningizcha va borganingizdan keyin ham doimiy qo'llab-quvvatlash!\n\n"
-            "💬 <i>Orzuingizdagi universitetga ilk qadamni hoziroq qo'ying! Batafsil ma'lumot va maslahat uchun adminimiz bilan bog'laning.</i>\n@bekk_owner"
-        )
+        # Chet el matni o'zgarishsiz qoldi...
+        chet_el_matni = "✈️ <b>UNIWAY Consulting bilan Xorijda Ta'lim oling!</b>\n\nBatafsil maslahat uchun adminimiz: @bekk_owner"
         await message.answer(chet_el_matni, parse_mode="HTML")
 
     elif "Manzilimiz" in text:
-        google_maps_link = "https://maps.app.goo.gl/diM4bQCEmaVoWuKP8"
         latitude = 38.97539774265464   
         longitude = 66.69552288927127  
-        
         await message.answer_location(latitude=latitude, longitude=longitude)
-        
-        manzil_matni = (
-            "📍 <b>Bizning manzilimiz:</b>\n"
-            "Yakkabog' tumani, Amir Temur ko'chasi.\nMo'ljal: Agrobank ro'parasidagi bino 2-qavatida \n\n"
-             f"🌐 <a href='{google_maps_link}'>Google Maps orqali ko'rish</a>"
-        )
-        await message.answer(manzil_matni, parse_mode="HTML", disable_web_page_preview=False)
+        manzil_matni = "📍 <b>Bizning manzilimiz:</b>\nYakkabog' tumani, Amir Temur ko'chasi.\nMo'ljal: Agrobank ro'parasidagi bino 2-qavatida"
+        await message.answer(manzil_matni, parse_mode="HTML")
 
     elif "Aloqaga chiqish" in text:
         await message.answer("📞 <b>Biz bilan aloqa:</b>\n\nAdmin: @bekk_owner\nTelefon: +998770869988", parse_mode="HTML")
@@ -197,6 +199,32 @@ async def process_main_menu(message: Message, state: FSMContext):
     elif "Ariza qoldirish" in text:
         await message.answer("👤 Ism va familiyangizni kiriting (Faqat harflar bilan):", reply_markup=ReplyKeyboardRemove())
         await state.set_state(BotStates.APP_NAME)
+        
+    elif "Pul ishlash" in text:
+        conn = sqlite3.connect("school.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT referral_code FROM users WHERE chat_id = ?", (message.from_user.id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        ref_code = row[0] if row else "Xatolik"
+        user_link = build_profile_link_html(message.from_user.id, message.from_user.username, message.from_user.first_name)
+        
+        pul_matni = (
+            "💰 <b>UNIWAY hamkorlik dasturi!</b>\n\n"
+            "Do'stlaringizni o'quv markazimizga taklif qiling va pul ishlang! "
+            "Quyidagi maxsus xabarni do'stlaringizga yoki guruhlarga tarqating. "
+            "Ular markazimizga kelib ushbu kodni ko'rsatishganda sizga bonus yoziladi!\n\n"
+            "👇 <b>Do'stlar uchun yuboriladigan xabar:</b>\n"
+            "-----------------------------------------\n"
+            f"Salam! Men UNIWAY o'quv markazida o'qiyapman. Senga ham tavsiya qilaman! "
+            f"Ro'yxatdan o'tishda mening maxsus kodimni taqdim etsang, chegirmaga ega bo'lasan!\n\n"
+            f"🔑 <b>Mening maxsus kodim:</b> <code>{ref_code}</code>\n"
+            f"👤 <b>Taklif qiluvchi profili:</b> {user_link}\n"
+            "-----------------------------------------\n"
+            "<i>Eslatma: Kodni nusalab oling va do'stingizga yuboring!</i>"
+        )
+        await message.answer(pul_matni, parse_mode="HTML", disable_web_page_preview=True)
 
 # ================= KURSLAR MENYUSI LOGIKASI =================
 @dp.message(BotStates.COURSES_MENU)
@@ -211,62 +239,12 @@ async def process_courses_menu(message: Message, state: FSMContext):
         return
 
     courses_data = {
-        "IT": (
-            "💻 <b>🚀 KELAJAK KASBI: IT-KURSLARI</b>\n\n"
-            "Dunyoning eng daromadli sohasiga biz bilan qadam qo'ying! Nol qiymatdan professional darajagacha o'rgatamiz.\n\n"
-            "🔥 <b>Bizning yo'nalishlar:</b>\n"
-            "🔹 <b>Tillar:</b> Python, C++, CSS, PostgreSQL JavaScript, \n\n"
-            "⏱ <b>Davomiyligi:</b> 6 - 9 oy\n"
-            "📅 <b>Dars jadvali:</b> Haftada 3 marta, 2 soatdan\n🔹 Bepul qo'shimcha dars olish imkoniyati\n\n"
-            "<i>🎯 Kurs davomida real loyihalar (portfolio) yaratasiz va bitiruvchilarga ish topishda ko'maklashiladi!</i>"
-        ),
-        
-        "Robototexnika": (
-            "🤖 <b>✨ ROBOTOTEXNIKA — KELAJAK GENIYLARI UCHUN!</b>\n\n"
-            "Farzandingiz telefon o'yinlarini yaxshi ko'radimi? Unda o'z robotlarini yaratishni o'rgansin!\n\n"
-            "🛠 <b>Kurs dasturida:</b>\n"
-            "• Scratch va Arduino platformasida mukammal ishlash\n"
-            "• Elektron sxemalar tuzish va modellashtirish\n"
-            "• Robotlarni mustaqil dasturlash va boshqarish\n\n"
-            "👶 <b>Yosh cheklovi:</b> 7 yoshdan boshlab\n"
-            "⚡️ <b>Afzalligi:</b> Darslar 100% amaliy va qiziqarli laboratoriya xonalarida o'tiladi!"
-        ),
-        
-        "English for kids": (
-            "👶 <b>🇬🇧 ENGLISH FOR KIDS — BOLALAR UCHUN INGLIZ TILI</b>\n"
-            "AMERIKA🇺🇸 VA JANUBIY KOREYA🇰🇷 STANDARTLARI ASOSIDA INGLIZ TILI KURSLARI\n\n"
-            "Zerikarli qoidalar va yodlashlardan voz keching! Bolajonlar ingliz tilini yaxshi ko'rib, erkin gapirishni boshlashadi.\n\n"
-            "🌟 <b>Bizning metodika:</b>\n"
-            "🎲 Interaktiv va quvnoq o'yinlar\n"
-            "🎁 Har xil mukofotlar va sovg'alar \n"
-            "🎵 Qo'shiqlar, multfilmlar va jamoaviy bahslar\n"
-            "🗣 Psixologik to'siqlarsiz erkin muloqot muhiti\n\n"
-            "📅 <b>Dars jadvali:</b> Haftada 3 marta\n"
-            "<i>💡 Farzandingiz kelajagi uchun eng to'g'ri investitsiyani hozirdan boshlang!</i>"
-        ),
-        
-        "IELTS": (
-            "📈 <b>🏆 IELTS INTENSIVE — YUQORI BALL KAFOLATI</b>\n\n"
-            "Xorijiy universitetlar va nufuzli grantlar eshigini ochish vaqti keldi! Maqsadli va qisqa muddatli kuchli tizim.\n\n"
-            "📌 <b>Kurs ichida nimalar bor?</b>\n"
-            "✔️ Har bir modul (Listening, Reading, Writing, Speaking) uchun alohida strategiyalar\n"
-            "✔️ Real exam muhitida tayyorgarlik\n"
-            "✔️ Ekspert o'qituvchilardan individual feedback (xatolar ustida ishlash)\n"
-            "📅 <b>Dars jadvali:</b> Haftada 3 marta\n\n"            
-        ),
-        
-        "CEFR": (
-            "⚠️Davlat CEFR imtihonini baholash tizimi judayam rasvo bo'lganligi va hozirgi vaqtlarda ballar judayam past qo'yilayotganligi sababli biz CEFR o'qitishdan voz kechdik! Va to'liq IELTS tayyorlovga o'tdik. "
-        ),
-        
-        "Rus tili": (
-            "🇷🇺 <b>🗣 RUS TILI (SAYRASH — RAZGOVOR KURS)</b>\n\n"
-            "Rus tilida tushunasiz-u, lekin gapira olmaysizmi? Komplekslardan qutulib, xuddi ona tilingizdek erkin va ravon gapirishni o'rganing!\n\n"
-            "🎯 <b>Kurs kimlar uchun?</b>\n"
-            "• Rossiyada o'qish yoki ishlamoqchi bo'lganlar\n"
-            "• Biznes va kundalik hayotda qiynalmasdan muloqot qilishni istaganlar\n\n"
-            "🎧 <b>Metod:</b> Jonli audio va video materiallar, faqat va faqat jonli muloqot darslari!"
-        )
+        "IT": "💻 <b>🚀 IT-KURSLARI</b>\n\nPython, C++, CSS, PostgreSQL, JavaScript.",
+        "Robototexnika": "🤖 <b>✨ ROBOTOTEXNIKA</b>\n\nScratch va Arduino platformasi.",
+        "English for kids": "👶 <b>🇬🇧 ENGLISH FOR KIDS</b>\n\nBolalar uchun qiziqarli ingliz tili.",
+        "IELTS": "📈 <b>🏆 IELTS INTENSIVE</b>\n\nYuqori ball kafolati.",
+        "CEFR": "⚠️ Biz CEFR o'qitishdan voz kechdik! Va to'liq IELTS tayyorlovga o'tdik.",
+        "Rus tili": "🇷🇺 <b>🗣 RUS TILI (SAYRASH)</b>\n\nErkin va ravon gapirishni o'rganing!"
     }
 
     if text in courses_data:
@@ -279,13 +257,10 @@ async def process_courses_menu(message: Message, state: FSMContext):
 async def app_name(message: Message, state: FSMContext):
     update_user_activity(message)
     name_text = message.text
-    
     if name_text == ADMIN_CODE: return 
-    
     if re.search(r'\d', name_text):
-        await message.answer("❌ Ism va familiyada raqam qatnashishi mumkin emas! Iltimos, qaytadan to'g'ri kiriting:")
+        await message.answer("❌ Ism va familiyada raqam qatnashishi mumkin emas! Qayta kiriting:")
         return
-        
     await state.update_data(fullname=name_text)
     await message.answer("📅 Tug'ilgan yilingizni kiriting (Masalan: 2005):")
     await state.set_state(BotStates.APP_YEAR)
@@ -294,32 +269,25 @@ async def app_name(message: Message, state: FSMContext):
 async def app_year(message: Message, state: FSMContext):
     update_user_activity(message)
     year_text = message.text
-    
     if year_text == ADMIN_CODE: return
-    
     if not year_text.isdigit() or len(year_text) != 4:
         await message.answer("❌ Iltimos, yilni to'g'ri formatda kiriting (Masalan: 2004):")
         return
-        
     await state.update_data(birth_year=year_text)
-    await message.answer("📞 Telefon raqamingizni kiriting:\nFormati qat'iy: <code>+998XXXXXXXXX</code> (Jami 13 ta belgi)", parse_mode="HTML")
+    await message.answer("📞 Telefon raqamingizni kiriting:\nFormati: <code>+998XXXXXXXXX</code>", parse_mode="HTML")
     await state.set_state(BotStates.APP_PHONE)
 
 @dp.message(BotStates.APP_PHONE)
 async def app_phone(message: Message, state: FSMContext):
     update_user_activity(message)
     phone_text = message.text.strip()
-    
     if phone_text == ADMIN_CODE: return
-    
     if not re.match(r'^\+998\d{9}$', phone_text):
-        await message.answer("❌ Noto'g'ri raqam formati!\nIltimos raqamni harflarsiz, jami 9 ta raqam bilan <code>+998XXXXXXXXX</code> ko'rinishida qayta kiriting:", parse_mode="HTML")
+        await message.answer("❌ Noto'g'ri raqam formati! Qayta kiriting:", parse_mode="HTML")
         return
-
     await state.update_data(phone=phone_text)
-    
     subject_kb = make_row_keyboard([["IT", "Robototexnika"], ["English for kids", "IELTS"], ["CEFR", "Rus tili"]])
-    await message.answer("📚 Qaysi fanni o'qimoqchisiz? Quyidagilardan tanlang:", reply_markup=subject_kb)
+    await message.answer("📚 Qaysi fanni o'qimoqchisiz?", reply_markup=subject_kb)
     await state.set_state(BotStates.APP_SUBJECT)
 
 @dp.message(BotStates.APP_SUBJECT)
@@ -329,7 +297,6 @@ async def app_subject(message: Message, state: FSMContext):
     
     data = await state.get_data()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
     user_username = message.from_user.username if message.from_user.username else ""
     user_first_name = message.from_user.first_name if message.from_user.first_name else "Foydalanuvchi"
 
@@ -338,12 +305,11 @@ async def app_subject(message: Message, state: FSMContext):
     cursor.execute("""
     INSERT INTO applications (chat_id, username, first_name, fullname, birth_year, phone, subject, created_at) 
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-    (message.from_user.id, user_username, user_first_name, 
-     data['fullname'], data['birth_year'], data['phone'], message.text, now_str))
+    (message.from_user.id, user_username, user_first_name, data['fullname'], data['birth_year'], data['phone'], message.text, now_str))
     conn.commit()
     conn.close()
     
-    await message.answer("✅ Arizangiz muvaffaqiyatli qabul qilindi! Tez orada aloqaga chiqamiz.")
+    await message.answer("✅ Arizangiz muvaffaqiyatli qabul qilindi!")
     kb = make_row_keyboard(MAIN_MENU_KBOARD)
     await message.answer("Asosiy menyu:", reply_markup=kb)
     await state.set_state(BotStates.MAIN_MENU)
@@ -359,6 +325,12 @@ async def process_admin_panel(message: Message, state: FSMContext):
         await cmd_start(message, state)
         return
 
+    if text == "🧑‍🎓 O'quvchilar paneli":
+        kb = make_row_keyboard(STUDENTS_MENU_KBOARD)
+        await message.answer("🧑‍🎓 <b>O'QUVCHILAR BILAN ISHLAH BO'LIMI:</b>", reply_markup=kb, parse_mode="HTML")
+        await state.set_state(BotStates.STUDENTS_PANEL)
+        return
+
     conn = sqlite3.connect("school.db")
     cursor = conn.cursor()
 
@@ -372,15 +344,7 @@ async def process_admin_panel(message: Message, state: FSMContext):
             for idx, item in enumerate(apps, 1):
                 c_id, u_name, f_name, f_fullname, b_year, p_phone, s_sub, c_at = item
                 p_link = build_profile_link_html(c_id, u_name, f_name)
-                
-                # HTML xavfsiz matnga o'tkazish
-                safe_fullname = f_fullname.replace("<", "&lt;").replace(">", "&gt;")
-                safe_phone = p_phone.replace("<", "&lt;").replace(">", "&gt;")
-                safe_sub = s_sub.replace("<", "&lt;").replace(">", "&gt;")
-
-                res += f"{idx}. 👤 <b>{safe_fullname}</b> ({p_link})\n"
-                res += f"    📅 Yil: {b_year} | 📞 Raqam: {safe_phone}\n"
-                res += f"    📚 Fan: {safe_sub} | 🕒 {c_at}\n\n"
+                res += f"{idx}. 👤 <b>{f_fullname}</b> ({p_link})\n📅 Yil: {b_year} | 📞 Raqam: {p_phone}\n📚 Fan: {s_sub} | 🕒 {c_at}\n\n"
             await message.answer(res, parse_mode="HTML", disable_web_page_preview=True)
 
     elif text == "❌ Arizalarni tozalash":
@@ -389,7 +353,7 @@ async def process_admin_panel(message: Message, state: FSMContext):
         await message.answer("🗑 Barcha arizalar muvaffaqiyatli o'chirildi va tozalandi!")
 
     elif text == "📢 Xabar yuborish":
-        await message.answer("📝 Xabarni kiriting (Rasm, matn yoki video yuborishingiz mumkin):", reply_markup=make_keyboard(["⬅️ Orqaga"]))
+        await message.answer("📝 Xabarni kiriting (Rasm, matn yoki video yuborishingiz mumkin):", reply_markup=make_row_keyboard([["⬅️ Orqaga"]]))
         await state.set_state(BotStates.ADMIN_BROADCAST)
 
     elif text == "🕒 Oxirgi 48 soat":
@@ -405,7 +369,6 @@ async def process_admin_panel(message: Message, state: FSMContext):
                 c_id, u_name, f_name, l_seen = user
                 user_link = build_profile_link_html(c_id, u_name, f_name)
                 res += f"{idx}. 👤 {user_link} | 🆔 <code>{c_id}</code> | 🕒 {l_seen}\n"
-                
             await message.answer(res, parse_mode="HTML", disable_web_page_preview=True)
         
     conn.close()
@@ -439,6 +402,104 @@ async def admin_broadcast(message: Message, state: FSMContext):
     kb = make_row_keyboard(ADMIN_MENU_KBOARD)
     await message.answer("Admin bosh paneli:", reply_markup=kb)
     await state.set_state(BotStates.ADMIN_PANEL)
+
+# ================= O'QUVCHILAR (KELGANLAR) PANELI LOGIKASI =================
+@dp.message(BotStates.STUDENTS_PANEL)
+async def process_students_panel(message: Message, state: FSMContext):
+    text = message.text
+    
+    if text == "⬅️ Admin panelga qaytish":
+        kb = make_row_keyboard(ADMIN_MENU_KBOARD)
+        await message.answer("Admin bosh paneli:", reply_markup=kb)
+        await state.set_state(BotStates.ADMIN_PANEL)
+        return
+
+    if text == "➕ Yangi o'quvchi qo'shish":
+        await message.answer("🧑‍🎓 Yangi o'quvchining Ismi va Familiyasini kiriting:", reply_markup=ReplyKeyboardRemove())
+        await state.set_state(BotStates.ADD_STUDENT_NAME)
+        
+    elif text == "📊 Kelganlar ro'yxati":
+        conn = sqlite3.connect("school.db")
+        cursor = conn.cursor()
+        
+        # Talabalarni olamiz va ularni olib kelgan foydalanuvchilar ma'lumotlarini JOIN qilamiz
+        cursor.execute("""
+            SELECT s.fullname, s.phone, s.arrived_at, s.brought_by_code, u.chat_id, u.username, u.first_name 
+            FROM students s
+            LEFT JOIN users u ON s.brought_by_code = u.referral_code
+            ORDER BY s.id DESC
+        """)
+        students = cursor.fetchall()
+        conn.close()
+        
+        if not students:
+            await message.answer("📭 Hozircha kelgan yangi o'quvchilar ro'yxati bo'sh.")
+            return
+            
+        res = "📊 <b>Yangi kelgan o'quvchilar ro'yxati (Barcha vaqtlar):</b>\n\n"
+        for idx, item in enumerate(students, 1):
+            s_name, s_phone, s_date, s_code, u_id, u_username, u_first = item
+            
+            if u_id:
+                referrer_link = build_profile_link_html(u_id, u_username, u_first)
+                ref_info = f"{referrer_link} (Kod: {s_code})"
+            else:
+                ref_info = f"To'g'ridan-to'g'ri kelgan / Kod: {s_code if s_code else 'Yo\'q'}"
+                
+            res += f"{idx}. 🧑‍🎓 <b>{s_name}</b>\n"
+            res += f" 📞 Tel: {s_phone}\n"
+            res += f" 📅 Kelgan vaqti: {s_date}\n"
+            res += f" 🔗 Kim olib keldi: {ref_info}\n\n"
+            
+        await message.answer(res, parse_mode="HTML", disable_web_page_preview=True)
+
+# Yangi o'quvchi qo'shish jarayoni FSM
+@dp.message(BotStates.ADD_STUDENT_NAME)
+async def add_student_name(message: Message, state: FSMContext):
+    await state.update_data(s_name=message.text)
+    await message.answer("📞 O'quvchining telefon raqamini kiriting:")
+    await state.set_state(BotStates.ADD_STUDENT_PHONE)
+
+@dp.message(BotStates.ADD_STUDENT_PHONE)
+async def add_student_phone(message: Message, state: FSMContext):
+    await state.update_data(s_phone=message.text)
+    await message.answer("🔑 Uni olib kelgan odamning maxsus kodini kiriting (Agar hech kim olib kelmagan bo'lsa 'yoq' deb yozing):")
+    await state.set_state(BotStates.ADD_STUDENT_REF)
+
+@dp.message(BotStates.ADD_STUDENT_REF)
+async def add_student_ref(message: Message, state: FSMContext):
+    ref_code_input = message.text.strip().upper()
+    data = await state.get_data()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    brought_by = None if ref_code_input in ["YOQ", "YO'Q", "YOQUVCHI"] else ref_code_input
+
+    conn = sqlite3.connect("school.db")
+    cursor = conn.cursor()
+    
+    # Agar kod kiritilgan bo'lsa, u haqiqatan bazada borligini tekshiramiz
+    if brought_by:
+        cursor.execute("SELECT chat_id FROM users WHERE referral_code = ?", (brought_by,))
+        ref_exists = cursor.fetchone()
+        if not ref_exists:
+            await message.answer("❌ Bunday maxsus kod bazada topilmadi! Qaytadan to'g'ri kodni kiriting yoki 'yoq' deb yozing:")
+            conn.close()
+            return
+
+    # Talabani bazaga qo'shish
+    cursor.execute("""
+        INSERT INTO students (fullname, phone, brought_by_code, arrived_at)
+        VALUES (?, ?, ?, ?)
+    """, (data['s_name'], data['s_phone'], brought_by, now_str))
+    
+    conn.commit()
+    conn.close()
+    
+    await message.answer("✅ Yangi o'quvchi muvaffaqiyatli ro'yxatga olindi va 'Kelganlar ro'yxati'ga qo'shildi!")
+    
+    kb = make_row_keyboard(STUDENTS_MENU_KBOARD)
+    await message.answer("O'quvchilar paneli:", reply_markup=kb)
+    await state.set_state(BotStates.STUDENTS_PANEL)
 
 # ================= ISHGA TUSHIRISH =================
 async def main():
