@@ -1,5 +1,6 @@
 import sqlite3
 import logging
+import asyncio  # Kodning eng tepasida borligini tekshirib oling
 import re
 import random, string
 from datetime import datetime, timedelta
@@ -11,6 +12,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from os import getenv
 from dotenv import load_dotenv
+import threading
+import time
+import requests
+# Port ochish uchun kichik HTTP server
+from http.server import BaseHTTPRequestHandler, HTTPServer 
 
 # Loggingni sozlash
 logging.basicConfig(level=logging.INFO)
@@ -21,12 +27,14 @@ TOKEN = getenv("TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+# Render'dagi haqiqiy URL manzilingiz
+BOT_URL = "https://mening-botim-37nw.onrender.com"
+
 # ================= MA'LUMOTLAR BAZASI TIZIMI =================
 def init_db():
     conn = sqlite3.connect("school.db")
     cursor = conn.cursor()
     
-    # Foydalanuvchilar jadvali (referal_code va referred_by qo'shildi)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         chat_id INTEGER PRIMARY KEY,
@@ -37,7 +45,6 @@ def init_db():
         referred_by TEXT
     )""")
     
-    # Arizalar jadvali
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS applications (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,7 +58,6 @@ def init_db():
         created_at TEXT
     )""")
     
-    # O'quv markaziga kelgan talabalar jadvali (Yangi)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS students (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,22 +69,49 @@ def init_db():
     conn.commit()
     conn.close()
 
+# ================= RENDER UCHUN HTTP SERVER VA PING =================
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Render portni tekshirganda 200 OK javobini qaytaruvchi server"""
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+    def log_message(self, format, *args):
+        return # Konsolni ortiqcha HTTP loglar bilan to'ldirmaslik uchun
+
+def start_http_server():
+    """Render talab qiladigan portni ochish (Odatiy 10000 yoki o'zgaruvchi)"""
+    port = int(getenv("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    logging.info(f"🌐 HTTP Server {port}-portda ishga tushdi.")
+    server.serve_forever()
+
+def self_ping():
+    """Bot uxlab qolmasligi uchun har 10 daqiqada o'ziga so'rov yuboradi"""
+    time.sleep(30) # Server to'liq ishlab ketishi uchun biroz kutamiz
+    while True:
+        try:
+            requests.get(BOT_URL, timeout=10)
+            logging.info("🤖 Self-ping muvaffaqiyatli bajarildi.")
+        except Exception as e:
+            logging.error(f"❌ Pingda xatolik: {e}")
+        time.sleep(600) # 10 daqiqa
+
 # ================= FSM HOLATLARI (STATES) =================
 class BotStates(StatesGroup):
     MAIN_MENU = State()
     COURSES_MENU = State()
     
-    # Ariza qoldirish holatlari
     APP_NAME = State()
     APP_YEAR = State()
     APP_PHONE = State()
     APP_SUBJECT = State()
     
-    # Admin holatlari
     ADMIN_PANEL = State()
     ADMIN_BROADCAST = State()
     
-    # Yangi o'quvchi qo'shish holatlari (Admin uchun)
     STUDENTS_PANEL = State()
     ADD_STUDENT_NAME = State()
     ADD_STUDENT_PHONE = State()
@@ -86,7 +119,6 @@ class BotStates(StatesGroup):
 
 # ================= YORDAMCHI FUNKSIYALAR =================
 def generate_ref_code():
-    """Foydalanuvchilar uchun noyob 6 xonali kod yaratadi"""
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
 def make_row_keyboard(buttons_matrix: list) -> ReplyKeyboardMarkup:
@@ -102,7 +134,6 @@ def update_user_activity(message: Message):
     username = message.from_user.username if message.from_user.username else ""
     first_name = message.from_user.first_name if message.from_user.first_name else "Foydalanuvchi"
 
-    # Avval foydalanuvchi mavjudligini tekshiramiz (kod o'zgarmasligi uchun)
     cursor.execute("SELECT referral_code FROM users WHERE chat_id = ?", (chat_id,))
     user_data = cursor.fetchone()
     
@@ -182,7 +213,6 @@ async def process_main_menu(message: Message, state: FSMContext):
         await state.set_state(BotStates.COURSES_MENU)
 
     elif "Chet elda o'qish" in text:
-        # Chet el matni o'zgarishsiz qoldi...
         chet_el_matni = "✈️ <b>UNIWAY Consulting bilan Xorijda Ta'lim oling!</b>\n\nBatafsil maslahat uchun adminimiz: @bekk_owner"
         await message.answer(chet_el_matni, parse_mode="HTML")
 
@@ -373,7 +403,37 @@ async def process_admin_panel(message: Message, state: FSMContext):
         
     conn.close()
 
-# Admin Reklama tarqatish qismi
+# @dp.message(BotStates.ADMIN_BROADCAST)
+# async def admin_broadcast(message: Message, state: FSMContext):
+#     if message.text == "⬅️ Orqaga":
+#         kb = make_row_keyboard(ADMIN_MENU_KBOARD)
+#         await message.answer("Admin bosh paneli:", reply_markup=kb)
+#         await state.set_state(BotStates.ADMIN_PANEL)
+#         return
+
+#     conn = sqlite3.connect("school.db")
+#     cursor = conn.cursor()
+#     cursor.execute("SELECT chat_id FROM users")
+#     all_users = cursor.fetchall()
+#     conn.close()
+
+#     success, fail = 0, 0
+#     await message.answer("📢 Xabar tarqatish boshlandi, biroz kuting...")
+    
+#     for user in all_users:
+#         try:
+#             await message.copy_to(chat_id=user[0])
+#             success += 1
+#         except Exception:
+#             fail += 1
+
+#     await message.answer(f"✅ Xabar tarqatish tugadi!\n\n🚀 Yetkazildi: {success} ta userga\n❌ Yo'qotildi: {fail} ta user")
+#     kb = make_row_keyboard(ADMIN_MENU_KBOARD)
+#     await message.answer("Admin bosh paneli:", reply_markup=kb)
+#     await state.set_state(BotStates.ADMIN_PANEL)
+
+
+# Admin Reklama tarqatish qismi (Optimallashtirilgan variant)
 @dp.message(BotStates.ADMIN_BROADCAST)
 async def admin_broadcast(message: Message, state: FSMContext):
     if message.text == "⬅️ Orqaga":
@@ -388,19 +448,46 @@ async def admin_broadcast(message: Message, state: FSMContext):
     all_users = cursor.fetchall()
     conn.close()
 
+    if not all_users:
+        await message.answer("🤷‍♂️ Bazada hech qanday foydalanuvchi yo'q.")
+        return
+
     success, fail = 0, 0
-    await message.answer("📢 Xabar tarqatish boshlandi, biroz kuting...")
+    progress_message = await message.answer(f"📢 Xabar tarqatish boshlandi...\n👥 Jami foydalanuvchilar: {len(all_users)} ta")
     
-    for user in all_users:
+    # Reklamani asosiy jarayonni qotirmasdan (fonda) yuborish uchun asinxron sikl
+    for idx, user in enumerate(all_users, 1):
         try:
+            # Xabarni nusxalab yuboramiz
             await message.copy_to(chat_id=user[0])
             success += 1
         except Exception:
             fail += 1
 
-    await message.answer(f"✅ Xabar tarqatish tugadi!\n\n🚀 Yetkazildi: {success} ta userga\n❌ Yo'qotildi: {fail} ta user")
+        # Har 20 ta xabardan keyin Telegram blokiga tushmaslik uchun 0.5 soniya dam oladi
+        if idx % 20 == 0:
+            await asyncio.sleep(0.5)
+            # Admin zerikib qolmasligi uchun jarayonni yangilab turamiz
+            try:
+                await progress_message.edit_text(
+                    f"📢 Xabar tarqatilmoqda...\n\n"
+                    f"⏳ Yuborildi: {idx}/{len(all_users)}\n"
+                    f"✅ Muvaffaqiyatli: {success}\n"
+                    f"❌ Xatolik: {fail}"
+                )
+            except Exception:
+                pass # Agar xabar o'zgarmasa xatolik bermasligi uchun
+
+    # Yakuniy natija
+    await progress_message.delete() # Progress xabarini o'chiramiz
+    
+    yakuniy_matn = (
+        f"✅ <b>Xabar tarqatish tugadi!</b>\n\n"
+        f"🚀 Yetkazildi: {success} ta userga\n"
+        f"❌ Yo'qotildi: {fail} ta user (botni bloklaganlar)"
+    )
     kb = make_row_keyboard(ADMIN_MENU_KBOARD)
-    await message.answer("Admin bosh paneli:", reply_markup=kb)
+    await message.answer(yakuniy_matn, parse_mode="HTML", reply_markup=kb)
     await state.set_state(BotStates.ADMIN_PANEL)
 
 # ================= O'QUVCHILAR (KELGANLAR) PANELI LOGIKASI =================
@@ -422,7 +509,6 @@ async def process_students_panel(message: Message, state: FSMContext):
         conn = sqlite3.connect("school.db")
         cursor = conn.cursor()
         
-        # Talabalarni olamiz va ularni olib kelgan foydalanuvchilar ma'lumotlarini JOIN qilamiz
         cursor.execute("""
             SELECT s.fullname, s.phone, s.arrived_at, s.brought_by_code, u.chat_id, u.username, u.first_name 
             FROM students s
@@ -453,7 +539,6 @@ async def process_students_panel(message: Message, state: FSMContext):
             
         await message.answer(res, parse_mode="HTML", disable_web_page_preview=True)
 
-# Yangi o'quvchi qo'shish jarayoni FSM
 @dp.message(BotStates.ADD_STUDENT_NAME)
 async def add_student_name(message: Message, state: FSMContext):
     await state.update_data(s_name=message.text)
@@ -477,7 +562,6 @@ async def add_student_ref(message: Message, state: FSMContext):
     conn = sqlite3.connect("school.db")
     cursor = conn.cursor()
     
-    # Agar kod kiritilgan bo'lsa, u haqiqatan bazada borligini tekshiramiz
     if brought_by:
         cursor.execute("SELECT chat_id FROM users WHERE referral_code = ?", (brought_by,))
         ref_exists = cursor.fetchone()
@@ -486,7 +570,6 @@ async def add_student_ref(message: Message, state: FSMContext):
             conn.close()
             return
 
-    # Talabani bazaga qo'shish
     cursor.execute("""
         INSERT INTO students (fullname, phone, brought_by_code, arrived_at)
         VALUES (?, ?, ?, ?)
@@ -504,7 +587,16 @@ async def add_student_ref(message: Message, state: FSMContext):
 # ================= ISHGA TUSHIRISH =================
 async def main():
     init_db()
+    
+    # 1. Portni ochuvchi HTTP Serverni alohida oqimda yurgizamiz (Render uchun shart!)
+    threading.Thread(target=start_http_server, daemon=True).start()
+    
+    # 2. Botni uykudan uyg'otib turuvchi pingni ham alohida oqimda yurgizamiz
+    threading.Thread(target=self_ping, daemon=True).start()
+    
     print("🤖 BOT ISHLADI...")
+    
+    # 3. Eng oxirida botni cheksiz zanjirga (polling) qo'yamiz
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
