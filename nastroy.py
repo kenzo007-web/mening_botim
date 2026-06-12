@@ -199,7 +199,6 @@ async def process_main_menu(message: Message, state: FSMContext):
         await state.set_state(BotStates.COURSES_MENU)
 
     elif "Chet elda o'qish" in text:
-        # SIZ TAQDIM ETGAN YANGI CHET EL MATNI
         chet_el_matni = (
             "✈️ <b>UNIWAY Consulting bilan Xorijda Ta'lim oling!</b>\n\n"
             "Kelajagingizni dunyoning eng nufuzli universitetlarida qurish vaqti keldi. "
@@ -255,13 +254,62 @@ async def process_courses_menu(message: Message, state: FSMContext):
         await state.set_state(BotStates.MAIN_MENU)
         return
 
+    # SIZ TELEGRAM STORY'DAN NURXALAB KELGAN YANGI KURS MATNLARI
     courses_data = {
-        "IT": "💻 <b>🚀 IT-KURSLARI</b>\n\nPython, C++, CSS, PostgreSQL, JavaScript.",
-        "Robototexnika": "🤖 <b>✨ ROBOTOTEXNIKA</b>\n\nScratch va Arduino platformasi.",
-        "English for kids": "👶 <b>🇬🇧 ENGLISH FOR KIDS</b>\n\nBolalar uchun qiziqarli ingliz tili.",
-        "IELTS": "📈 <b>🏆 IELTS INTENSIVE</b>\n\nYuqori ball kafolati.",
-        "CEFR": "⚠️ Biz CEFR o'qitishdan voz kechdik! Va to'liq IELTS tayyorlovga o'tdik.",
-        "Rus tili": "🇷🇺 <b>🗣 RUS TILI (SAYRASH)</b>\n\nErkin va ravon gapirishni o'rganing!"
+        "IT": (
+            "💻 🚀 <b>KELAJAK KASBI: IT-KURSLARI</b>\n\n"
+            "Dunyoning eng daromadli sohasiga biz bilan qadam qo'ying! Nol qiymatdan professional darajagacha o'rgatamiz.\n\n"
+            "🔥 <b>Bizning yo'nalishlar:</b>\n"
+            "🔹 Tillar: Python, C++, CSS, PostgreSQL, JavaScript\n\n"
+            "⏱ <b>Davomiyligi:</b> 6 - 9 oy\n"
+            "📅 <b>Dars jadvali:</b> Haftada 3 marta, 2 soatdan\n"
+            "🔹 Bepul qo'shimcha dars olish imkoniyati\n\n"
+            "🎯 Kurs davomida real loyihalar (portfolio) yaratasiz va bitiruvchilarga ish topishda ko'maklashiladi!"
+        ),
+        "Robototexnika": (
+            "🤖 ✨ <b>ROBOTOTEXNIKA — KELAJAK GENIYLARI UCHUN!</b>\n\n"
+            "Farzandingiz telefon o'yinlarini yaxshi ko'radimi? Unda o'z robotlarini yaratishni o'rgansin!\n\n"
+            "🛠 <b>Kurs dasturida:</b>\n"
+            "• Scratch va Arduino platformasida mukammal ishlash\n"
+            "• Elektron sxemalar tuzish va modellashtirish\n"
+            "• Robotlarni mustaqil dasturlash va boshqarish\n\n"
+            "👶 <b>Yosh cheklovi:</b> 7 yoshdan boshlab\n"
+            "⚡️ <b>Afzalligi:</b> Darslar 100% amaliy va qiziqarli laboratoriya xonalarida o'tiladi!"
+        ),
+        "English for kids": (
+            "👶 🇬🇧 <b>ENGLISH FOR KIDS — BOLALAR UCHUN INGLIZ TILI</b>\n"
+            "AMERIKA🇺🇸 VA JANUBIY KOREYA🇰🇷 STANDARTLARI ASOSIDA INGLIZ TILI KURSLARI\n\n"
+            "Zerikarli qoidalar va yodlashlardan voz keching! Bolajonlar ingliz tilini yaxshi ko'rib, erkin gapirishni boshlashadi.\n\n"
+            "🌟 <b>Bizning metodika:</b>\n"
+            "🎲 Interaktiv va quvnoq o'yinlar\n"
+            "🎁 Har xil mukofotlar va sovg'alar\n"
+            "🎵 Qo'shiqlar, multfilmlar va jamoaviy bahslar\n"
+            "🗣 Psixologik to'siqlarsiz erkin muloqot muhiti\n\n"
+            "📅 <b>Dars jadvali:</b> Haftada 3 marta\n"
+            "💡 Farzandingiz kelajagi uchun eng to'g'ri investitsiyani hozirdan boshlang!"
+        ),
+        "IELTS": (
+            "📈 🏆 <b>IELTS INTENSIVE — YUQORI BALL KAFOLATI</b>\n\n"
+            "Xorijiy universitetlar va nufuzli grantlar eshigini ochish vaqti keldi! Maqsadli va qisqa muddatli kuchli tizim.\n\n"
+            "📌 <b>Kurs ichida nimalar bor?</b>\n"
+            "✔️ Har bir modul (Listening, Reading, Writing, Speaking) uchun alohida strategiyalar\n"
+            "✔️ Real exam (haqiqiy imtihon) muhitida tayyorgarlik\n"
+            "✔️ Ekspert o'qituvchilardan individual feedback (xatolar ustida ishlash)\n\n"
+            "📅 <b>Dars jadvali:</b> Haftada 3 marta"
+        ),
+        "CEFR": (
+            "⚠️ <b>DIQQAT OGOHLANTIRISH!</b>\n\n"
+            "Davlat CEFR imtihonini baholash tizimi judayam rasvo bo'lganligi va hozirgi vaqtlarda ballar judayam past qo'yilayotganligi sababli "
+            "<b>biz CEFR o'qitishdan voz kechdik!</b> Va to'liq IELTS tayyorlovga o'tdik."
+        ),
+        "Rus tili": (
+            "🇷🇺 🗣 <b>RUS TILI (SAYRASH — RAZGOVOR KURS)</b>\n\n"
+            "Rus tilida tushunasiz-u, lekin gapira olmaysizmi? Komplekslardan qutulib, xuddi ona tilingizdek erkin va ravon gapirishni o'rganing!\n\n"
+            "🎯 <b>Kurs kimlar uchun?</b>\n"
+            "• Rossiyada o'qish yoki ishlamoqchi bo'lganlar\n"
+            "• Biznes va kundalik hayotda qiynalmasdan muloqot qilishni istaganlar\n\n"
+            "🎧 <b>Metod:</b> Jonli audio va video materiallar, faqat va faqat jonli muloqot darslari!"
+        )
     }
 
     if text in courses_data:
