@@ -1,6 +1,3 @@
-
-
-
 import sqlite3
 import logging
 import re
@@ -27,14 +24,14 @@ TOKEN = getenv("TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-BOT_URL = "https://mening-botim-37nw.onrender.com"
+# === SIZNING PING URL MANZILINGIZ ===
+URL = "https://mening-botim-37nw.onrender.com"
 
 # ================= MA'LUMOTLAR BAZASI TIZIMI =================
 def init_db():
     conn = sqlite3.connect("school.db")
     cursor = conn.cursor()
     
-    # Foydalanuvchilar jadvali (Toza holati)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         chat_id INTEGER PRIMARY KEY,
@@ -43,7 +40,6 @@ def init_db():
         last_seen TEXT
     )""")
     
-    # Arizalar jadvali
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS applications (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,7 +53,6 @@ def init_db():
         created_at TEXT
     )""")
     
-    # O'quvchilar jadvali (Toza holati)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS students (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +63,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ================= RENDER UCHUN HTTP SERVER VA PING =================
+# ================= RENDER UCHUN HTTP SERVER VA SIZNING PING FUNKSIYANGIZ =================
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -85,15 +80,15 @@ def start_http_server():
     logging.info(f"🌐 HTTP Server {port}-portda ishga tushdi.")
     server.serve_forever()
 
+# --- SIZ TAQDIM QILGAN FUNKSIYA (O'ZGARISHSIZ) ---
 def self_ping():
-    time.sleep(30)
     while True:
         try:
-            requests.get(BOT_URL, timeout=10)
-            logging.info("🤖 Self-ping muvaffaqiyatli bajarildi.")
+            requests.get(URL, timeout=10) 
+            print("O'zimni uyg'otdim!")
         except Exception as e:
-            logging.error(f"❌ Pingda xatolik: {e}")
-        time.sleep(600)
+            print("Xatolik:", e)
+        time.sleep(600) # 10 daqiqa (600 soniya)
 
 # ================= FSM HOLATLARI (STATES) =================
 class BotStates(StatesGroup):
@@ -148,7 +143,7 @@ def build_profile_link_html(chat_id, username, first_name):
         return f'<a href="https://t.me/{username}">{safe_name}</a>'
     return f'<a href="tg://user?id={chat_id}">{safe_name}</a>'
 
-# Global menyular ("Pul ishlash" olib tashlandi)
+# Global menyular
 MAIN_MENU_KBOARD = [
     ["📚 Kurslar haqida ma'lumot", "✈️ Chet elda o'qish"],
     ["📝 Ariza qoldirish", "📍 Manzilimiz"],
@@ -204,7 +199,34 @@ async def process_main_menu(message: Message, state: FSMContext):
         await state.set_state(BotStates.COURSES_MENU)
 
     elif "Chet elda o'qish" in text:
-        chet_el_matni = "✈️ <b>UNIWAY Consulting bilan Xorijda Ta'lim oling!</b>\n\nBatafsil maslahat uchun adminimiz: @bekk_owner"
+        # SIZ TAQDIM ETGAN YANGI CHET EL MATNI
+        chet_el_matni = (
+            "✈️ <b>UNIWAY Consulting bilan Xorijda Ta'lim oling!</b>\n\n"
+            "Kelajagingizni dunyoning eng nufuzli universitetlarida qurish vaqti keldi. "
+            "Biz sizga hujjatlar to'plashdan tortib, viza olishgacha bo'lgan barcha jarayonlarda yaqindan ko'maklashamiz! ✨\n\n"
+            "🌟 <b>Biz taklif etayotgan TOP davlatlar:</b>\n\n"
+            "🇰🇷 <b>JANUBIY KOREYA</b> — Yuqori texnologiyalar va K-Culture vatani!\n"
+            "• TOP-100 talikka kiruvchi nufuzli universitetlar.\n"
+            "• To'liq va qisman (30% - 100%) GRANT imkoniyatlari.\n"
+            "• O'qish davomida qonuniy ishlash va haftasiga 20 soatgacha daromad topish imkoni.\n"
+            "• Bitirgandan so'ng Koreyada qolib, nufuzli kompaniyalarda ishlash vizasini olish imkoniyati.\n\n"
+            "🇲🇾 <b>MALAYZIYA</b> — Osiyoning eng xavfsiz va ingliz tilli ta'lim markazi!\n"
+            "• AQSH, Buyuk Britaniya va Avstraliya universitetlarining filiallarida o'qish imkoniyati (Double Degree — 2 ta diplom).\n"
+            "• IELTS ballingiz bo'lsa, 100% viza kafolati va IELTS'siz ham qabul qilinish imkoni.\n"
+            "• Yevropa standartidagi ta'lim, lekin yashash va o'qish xarajatlari juda arzon.\n"
+            "• To'liq ingliz tili muhiti.\n\n"
+            "🇹🇷 <b>TURKIYA</b> — Yevropa va Osiyo chorrahasidagi sifatli ta'lim!\n"
+            "• Imtihonsiz, faqatgina attestat yoki diplom baholari bilan talaba bo'lish imkoniyati.\n"
+            "• Turkiya davlat universitetlarida o'ta arzon (kontrakt to'lovlarisiz deyarli tekin) o'qish.\n"
+            "• Diplomi butun Yevropada va O'zbekistonda to'g'ridan-to'g'ri (nostrifikatsiyasiz) o'tadi.\n"
+            "• Madaniyat, til va qadriyatlarimiz juda yaqinligi sababli moslashish oson.\n\n"
+            "🔥 <b>Nega aynan UNIWAY?</b>\n"
+            "• 100% ishonchli va shaffof shartnoma.\n"
+            "• Professional maslahatchilar guruhining individual yondashuvi.\n"
+            "• Ketguningizcha va borganingizdan keyin ham doimiy qo'llab-quvvatlash!\n\n"
+            "💬 Orzuingizdagi universitetga ilk qadamni hoziroq qo'ying! Batafsil ma'lumot va maslahat uchun adminimiz bilan bog'laning:\n"
+            "👉 @bekk_owner"
+        )
         await message.answer(chet_el_matni, parse_mode="HTML")
 
     elif "Manzilimiz" in text:
@@ -480,12 +502,16 @@ async def add_student_phone(message: Message, state: FSMContext):
 # ================= ISHGA TUSHIRISH =================
 async def main():
     init_db()
+    
+    # 1. Portni eshituvchi HTTP serverni fonda ishga tushirish
     threading.Thread(target=start_http_server, daemon=True).start()
+    
+    # 2. SIZNING FONDA ISHLOVCHI PING FUNKSIYANGIZ (DAEMON TIZIMIDA)
     threading.Thread(target=self_ping, daemon=True).start()
+    
     print("🤖 BOT ISHLADI...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     import asyncio
     asyncio.run(main())
-
